@@ -2,122 +2,18 @@
 //!
 //! `data_generator` is simple test plugin able to store and send data to
 //! rwatch core instance over the network.
-use std::collections::HashMap;
+mod config;
+
 use std::error::Error;
 use std::io::{self, Write};
 use std::io::BufRead;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread;
+use rand::Rng;
 
-use serde_json::{self, Value}; //{Result, Value};
+use serde_json::{self, Value};
 
-#[derive(Debug)]
-pub struct Config {
-    pub port: u32,
-    pub random: bool,
-}
-
-impl Config {
-    pub fn new<T>(mut args: T) -> Result<Config, &'static str>
-    where T: Iterator<Item = std::string::String>
-    {
-        args.next();  // Discard args 0 which is program name
-
-        let parsed_args = Config::parse_option_args(args).unwrap();
-
-        let mut port: Option<String> = None;
-        let mut random: bool = false;
-        // Trouver un mécanisme pour rendre des options obligatoires
-        for option in parsed_args {
-            match option.name.as_str() {
-                "port" | "p" => port = option.value,
-                "random" | "r" => random = true,
-                _ => {
-                    eprintln!("Unknown option name: {}", option.name);
-                    return Err("Configuration parsing failed due to unknown option");
-                }
-            }
-        }
-
-	    Ok(Config {
-            port: Config::check_port(port)?,
-            random,
-	    })
-    }
-
-    fn parse_option_args<T>(args: T) -> Result<Vec<OptionArg>, &'static str>
-    where T: Iterator<Item = std::string::String>
-    {
-        let mut args_map: HashMap<String, Option<String>> = HashMap::new();
-
-        let mut previous_item = String::new();
-        let mut previous_is_name = false;
-
-        for item in args {
-            let item_is_name = item.starts_with("-");
-
-            match item_is_name {
-                false => {
-                    if previous_is_name == true {
-                        args_map.insert(previous_item, Some(item.clone()));
-                    } else {
-                        eprintln!("Option value '{}' must be preceded with an option name", &item);
-                        return Err("Error while parsing option arguments");
-                    }
-                },
-                true => {
-                    args_map.entry(item.clone()).or_insert(None);
-                }
-            };
-
-            previous_item = item.clone();
-            previous_is_name = item_is_name;
-        }
-
-        let mut parsed_args: Vec<OptionArg> = vec![];
-
-        for (key, value) in args_map {
-            let option = OptionArg::new(key, value);
-            parsed_args.push(option);
-        }
-
-        println!("PARSED {:#?}", parsed_args);  // DEBUG
-        Ok(parsed_args)
-    }
-
-    fn check_port(port: Option<String>) -> Result<u32, &'static str> {
-        let port: String = match port {
-            Some(n) => n,
-            None => return Err("No port value provided"),
-        };
-
-        let port: u32 = match port.parse() {
-            Ok(n) => n,
-            Err(..) => return Err("Error with port argument"),
-        };
-
-        if port < 1001 || port > 65535 {
-            return Err("Port value must be between 1001 and 65535");
-        };
-
-        Ok(port)
-    }
-}
-
-#[derive(Debug)]
-struct OptionArg {
-    pub name: String,
-    pub value: Option<String>,
-}
-
-impl OptionArg {
-    pub fn new(name: String, value: Option<String>) -> OptionArg {
-        let name = name.trim_start_matches("-").to_string();
-
-        OptionArg {
-            name,
-            value,
-        }
-    }
-}
+pub use crate::config::config::Config;
 
 #[derive(Debug)]
 struct Record {
@@ -125,6 +21,9 @@ struct Record {
 }
 
 impl Record {
+    // DEV Note: de manière idiomatique, il n'est pas judicieux de retourner un Box<dyn Error>
+    // dans le code d'une lib. En effet l'appelant peut vouloir gérer les erreurs de manière particulière.
+    // Il vaut mieux créer un type d'erreur (ou utiliser un type existant)
     pub fn new() -> Result<Record, Box<dyn Error>> {
         let list: Vec<Value> = Vec::new();
         Ok(Record {list})
@@ -132,8 +31,8 @@ impl Record {
 }
 
 impl Record {
-    pub fn store_data(&mut self, args: Vec<String>) {
-        for (i, line) in args.iter().enumerate() {
+    pub fn store_data(&mut self, data: &Vec<String>) -> Result<(), Box<dyn Error>>{
+        for (i, line) in data.iter().enumerate() {
             match serde_json::from_str(line.as_str()) {
                 Ok(n) => self.list.push(n),
                 Err(err) => {
@@ -143,17 +42,21 @@ impl Record {
             };
         }
         println!("Record: {:#?}", self);  // DEBUG
+
+        Ok(())
     }
 
     pub fn get_data(&mut self, args: Vec<String>) {
-        // effectuer la récupération des différents args ici (une option et une valeur pa ligne)
+        // effectuer la récupération des différents args ici (une option et une valeur par ligne)
     }
 }
 
 pub fn read_lines() -> Vec<String> {
     let stdin = io::stdin();
     let stdin_lock = stdin.lock();
-    let vec = stdin_lock.lines().filter_map(|l| l.ok()).collect();
+    let vec = stdin_lock
+        .lines()
+        .filter_map(|l| l.ok()).collect();
 
     vec
 }
@@ -172,21 +75,55 @@ fn parse_lines() -> Result<Vec<String>, &'static str> {
     Ok(lines)
 }
 
-fn execute_command(name: &String, args: Vec<String>, record: &mut Record) {
+fn execute_command(name: &String, args: Vec<String>, record: &mut Record)
+    -> Result<(), Box<dyn Error>> {
+
     name.to_lowercase();
 
     match name.as_str() {
-	"send" => record.get_data(args),
-	"store" => record.store_data(args),
-	"quit" => println!("quit entered"),
-	_ => eprintln!("'{}' is not a valid command", name)
+        "send" => record.get_data(args),
+	    "store" => record.store_data(&args)?,
+	    "quit" => println!("quit entered"),
+	    _ => eprintln!("'{}' is not a valid command", name)
+    };
+
+    Ok(())
+}
+
+fn generate_random_data(data_container: &mut Vec<String>, generate_interval: &Duration) {
+    loop {
+        let now = SystemTime::now();
+        let since_epoch = match now.duration_since(UNIX_EPOCH) {
+            Ok(n) => n,
+            Err(..) => {
+                eprintln!("Clock may have gone backwards");
+                continue;
+            }
+        };
+
+        let number = rand::thread_rng().gen_range(1..101);
+
+        let entry = format!(
+            r#"{{"time": {}, "random_value": {}}}"#,
+            since_epoch.as_millis(), &number);
+        let entry = String::from(entry);
+        println!("{}", entry);  // DEBUG
+        data_container.push(entry);
+
+        thread::sleep(*generate_interval);
     }
 }
 
-pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    let mut record = Record::new().unwrap();
+fn handle_random_data(record: &mut Record, generate_interval: &Duration, store_interval: &Duration) {
+    let mut container: Vec<String> = vec![];
+    // TODO: launch this in a thread
+    generate_random_data(&mut container, generate_interval);
 
-    for n in 0..8 {
+    // TODO: launch storing task in a thread with args (record, store_interval)
+}
+
+fn handle_user_data(record: &mut Record) -> Result<(), Box<dyn Error>> {
+    loop {
         let parsed_lines = parse_lines();
         let parsed_lines: Vec<String> = match parsed_lines {
             Ok(n) => n,
@@ -198,7 +135,26 @@ pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
         let name = &parsed_lines[0];
         let args = (&parsed_lines[1..]).to_vec();
-        execute_command(name, args, &mut record);
+        if let Err(..) = execute_command(name, args, record) {
+            break;
+        }
+    }
+
+    Ok(())
+
+}
+
+pub fn run(config: &Config) -> Result<(), Box<dyn Error>> {
+    let mut record = Record::new().unwrap();
+
+    if config.random == true {
+        handle_random_data(
+            &mut record,
+            &config.random_generate_interval,
+            &config.random_store_interval
+        );
+    } else {
+        handle_user_data(&mut record)?;
     }
     // Idiomatic, call run() for its side-effects and not the value
     // returned in case of success.
@@ -208,67 +164,6 @@ pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn config_new_no_arguments() {
-	let no_args: Vec<String> = Vec::new();
-
-	let config = Config::new(no_args.into_iter());
-
-	assert_eq!(config.err(), Some("Didn't get a port"));
-    }
-
-    #[test]
-    fn config_new_port_argument_ok() {
-	let port = 1002;
-	let args: Vec<String> = vec![
-	    String::from("program_name"),
-	    port.to_string(),
-	];
-
-	let config = Config::new(args.into_iter()).unwrap();
-
-	assert_eq!(config.port, port);
-    }
-
-    #[test]
-    fn config_new_port_argument_has_not_numeric_value() {
-	let bad_port = String::from("abc1234");
-	let args: Vec<String> = vec![
-	    String::from("program_name"),
-	    bad_port,
-	];
-
-	let config = Config::new(args.into_iter());
-
-	assert_eq!(config.err(), Some("Error with port argument"));
-    }
-
-    #[test]
-    fn config_new_port_argument_value_is_too_high() {
-	let port = String::from("123456789");
-	let args: Vec<String> = vec![
-	    String::from("program_name"),
-	    port,
-	];
-
-	let config = Config::new(args.into_iter());
-
-	assert_eq!(config.err(), Some("Port value must be between 1001 and 65535"));
-    }
-
-    #[test]
-    fn config_new_port_argument_value_is_too_low() {
-	let port = String::from("123");
-	let args: Vec<String> = vec![
-	    String::from("program_name"),
-	    port,
-	];
-
-	let config = Config::new(args.into_iter());
-
-	assert_eq!(config.err(), Some("Port value must be between 1001 and 65535"));
-    }
 
     #[test]
     fn store_data_push_result_into_record() {
@@ -308,8 +203,7 @@ mod tests {
 
     #[test]
     fn execute_command_name_is_case_insensitive() {
-        // Mocker la fonction "store_data" et voir si elle appelé malgré
-        // la valeur ci dessous
+        // TODO: Complete the test
         let name = String::from("sEnD");
     }
 }
