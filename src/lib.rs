@@ -2,11 +2,13 @@
 //!
 //! `data_generator` is simple test plugin able to store and send data to
 //! rwatch core instance over the network.
+
 mod config;
 
 use std::error::Error;
 use std::io::{self, Write};
 use std::io::BufRead;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::thread;
 use rand::Rng;
@@ -41,7 +43,7 @@ impl Record {
                 }
             };
         }
-        println!("Record: {:#?}", self);  // DEBUG
+        //println!("Record: {:#?}", self);  // DEBUG
 
         Ok(())
     }
@@ -90,8 +92,13 @@ fn execute_command(name: &String, args: Vec<String>, record: &mut Record)
     Ok(())
 }
 
-fn generate_random_data(data_container: &mut Vec<String>, generate_interval: &Duration) {
+fn generate_random_data(data_container: Arc<Mutex<Vec<String>>>, generate_interval: Duration)
+    {
+    let mut pending_data: Vec<String> = vec![];
+
     loop {
+        thread::sleep(generate_interval);
+
         let now = SystemTime::now();
         let since_epoch = match now.duration_since(UNIX_EPOCH) {
             Ok(n) => n,
@@ -108,18 +115,64 @@ fn generate_random_data(data_container: &mut Vec<String>, generate_interval: &Du
             since_epoch.as_millis(), &number);
         let entry = String::from(entry);
         println!("{}", entry);  // DEBUG
-        data_container.push(entry);
+        pending_data.push(entry);
 
-        thread::sleep(*generate_interval);
+        match data_container.try_lock() {
+            Ok(mut container) => {
+                for item in pending_data.drain(..) {
+                    container.push(item);
+                }
+            },
+            Err(_) => continue,
+        };
+
     }
 }
 
-fn handle_random_data(record: &mut Record, generate_interval: &Duration, store_interval: &Duration) {
-    let mut container: Vec<String> = vec![];
-    // TODO: launch this in a thread
-    generate_random_data(&mut container, generate_interval);
+fn store_random_data(
+    data_container: Arc<Mutex<Vec<String>>>,
+    record: Mutex<Record>,
+    store_interval: Duration) {
 
-    // TODO: launch storing task in a thread with args (record, store_interval)
+    loop {
+        thread::sleep(store_interval);
+
+        // A context is used so as to unlock resources at the end of each iteration.
+        {
+            let mut container = match data_container.lock() {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("Failed to store random data: {}",e);
+                    break;
+                }
+            };
+
+            let mut rec = match record.lock() {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("Failed to store random data: {}",e);
+                    break;
+                }
+            };
+
+            rec.store_data(&container);
+            container.clear();
+        }
+    }
+}
+
+fn handle_random_data(record: Record, generate_interval: Duration, store_interval: Duration) {
+    let container = Arc::new(Mutex::new(vec![]));
+    let record = Mutex::new(record);
+
+    let container_ref_1 = Arc::clone(&container);
+    let handle_generate = thread::spawn(move || {generate_random_data(container_ref_1, generate_interval)});
+
+    let container_ref_2 = Arc::clone(&container);
+    let handle_store = thread::spawn(move || {store_random_data(container_ref_2, record, store_interval)});
+
+    handle_generate.join().unwrap();
+    handle_store.join().unwrap();  // DEBUG
 }
 
 fn handle_user_data(record: &mut Record) -> Result<(), Box<dyn Error>> {
@@ -149,9 +202,9 @@ pub fn run(config: &Config) -> Result<(), Box<dyn Error>> {
 
     if config.random == true {
         handle_random_data(
-            &mut record,
-            &config.random_generate_interval,
-            &config.random_store_interval
+            record,
+            config.random_generate_interval,
+            config.random_store_interval
         );
     } else {
         handle_user_data(&mut record)?;

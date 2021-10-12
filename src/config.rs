@@ -14,7 +14,8 @@ pub mod config {
 
     impl Config {
         pub fn new<T>(mut args: T) -> Result<Config, &'static str>
-        where T: Iterator<Item = std::string::String>
+        where
+            T: Iterator<Item = std::string::String>
         {
             args.next();  // Discard args 0 which is program name
 
