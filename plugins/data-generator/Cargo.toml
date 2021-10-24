@@ -1,5 +1,5 @@
 [package]
-name = "data_generator"
+name = "data-generator"
 version = "0.1.0"
 authors = ["David Testé <david.teste@fratris.fr>"]
 edition = "2018"
