@@ -15,11 +15,11 @@ use rand::Rng;
 
 use serde_json::{self, Value};
 
-pub use crate::config::config::Config;
+pub use crate::config::Config;
 
 #[derive(Debug)]
 struct Record {
-    pub list: Vec<Value>,
+    pub list: Mutex<Vec<Value>>,
 }
 
 impl Record {
@@ -27,16 +27,18 @@ impl Record {
     // dans le code d'une lib. En effet l'appelant peut vouloir gérer les erreurs de manière particulière.
     // Il vaut mieux créer un type d'erreur (ou utiliser un type existant)
     pub fn new() -> Result<Record, Box<dyn Error>> {
-        let list: Vec<Value> = Vec::new();
+        let list = Mutex::new(Vec::new());
         Ok(Record {list})
     }
 }
 
 impl Record {
-    pub fn store_data(&mut self, data: &Vec<String>) -> Result<(), Box<dyn Error>>{
+    pub fn store_data(&mut self, data: &Vec<String>) -> Result<(), Box<dyn Error>> {
+        let mut list = self.list.lock().unwrap();
+
         for (i, line) in data.iter().enumerate() {
             match serde_json::from_str(line.as_str()) {
-                Ok(n) => self.list.push(n),
+                Ok(n) => list.push(n),
                 Err(err) => {
                     eprintln!("Failed to parse line {} : {}", i + 1, err);
                     continue;
@@ -48,8 +50,31 @@ impl Record {
         Ok(())
     }
 
-    pub fn get_data(&mut self, args: Vec<String>) {
-        // effectuer la récupération des différents args ici (une option et une valeur par ligne)
+    pub fn get_data(&mut self, lines: Option<u32>, latest: bool, flush: bool)
+        -> Vec<Value> {
+
+        let mut list = self.list.lock().unwrap();
+        let data: <Vec<Value>> = Vec::new();
+
+        // Faire un fast-path dans le cas ou 0 est passé en argument
+        if let Some(i) = lines {
+            if lastest == true {
+                data.extend_form_slice(get_record_slice(list, lines));
+            } else {
+
+            }
+        } else {}
+
+        if flush == true {
+            list.clear()
+        }
+
+        Ok(data)
+    }
+
+    fn get_record_slice(&list: Vec<Value>, length: i32) -> &Vec<Value> {
+        // Gérer le cas où l'index `length` dépasse la taille autorisée (omettre les lignes inexistantes)
+        // -> choper le minimum entre la longueur de `list` et la valeur de `length`
     }
 }
 
@@ -83,7 +108,7 @@ fn execute_command(name: &String, args: Vec<String>, record: &mut Record)
     name.to_lowercase();
 
     match name.as_str() {
-        "send" => record.get_data(args),
+        //"send" => record.get_data(args),
 	    "store" => record.store_data(&args)?,
 	    "quit" => println!("quit entered"),
 	    _ => eprintln!("'{}' is not a valid command", name)
@@ -92,8 +117,10 @@ fn execute_command(name: &String, args: Vec<String>, record: &mut Record)
     Ok(())
 }
 
-fn generate_random_data(data_container: Arc<Mutex<Vec<String>>>, generate_interval: Duration)
-    {
+fn generate_random_data(
+    data_container: Arc<Mutex<Vec<String>>>,
+    generate_interval: Duration) {
+
     let mut pending_data: Vec<String> = vec![];
 
     loop {
@@ -131,7 +158,7 @@ fn generate_random_data(data_container: Arc<Mutex<Vec<String>>>, generate_interv
 
 fn store_random_data(
     data_container: Arc<Mutex<Vec<String>>>,
-    record: Mutex<Record>,
+    mut record: Record,
     store_interval: Duration) {
 
     loop {
@@ -147,15 +174,7 @@ fn store_random_data(
                 }
             };
 
-            let mut rec = match record.lock() {
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("Failed to store random data: {}",e);
-                    break;
-                }
-            };
-
-            rec.store_data(&container);
+            record.store_data(&container);
             container.clear();
         }
     }
@@ -163,13 +182,16 @@ fn store_random_data(
 
 fn handle_random_data(record: Record, generate_interval: Duration, store_interval: Duration) {
     let container = Arc::new(Mutex::new(vec![]));
-    let record = Mutex::new(record);
 
     let container_ref_1 = Arc::clone(&container);
-    let handle_generate = thread::spawn(move || {generate_random_data(container_ref_1, generate_interval)});
+    let handle_generate = thread::spawn(move || {
+        generate_random_data(container_ref_1, generate_interval)
+    });
 
     let container_ref_2 = Arc::clone(&container);
-    let handle_store = thread::spawn(move || {store_random_data(container_ref_2, record, store_interval)});
+    let handle_store = thread::spawn(move || {
+        store_random_data(container_ref_2, record, store_interval)
+    });
 
     handle_generate.join().unwrap();
     handle_store.join().unwrap();  // DEBUG
@@ -197,14 +219,14 @@ fn handle_user_data(record: &mut Record) -> Result<(), Box<dyn Error>> {
 
 }
 
-pub fn run(config: &Config) -> Result<(), Box<dyn Error>> {
+pub fn run(conf: &config::Config) -> Result<(), Box<dyn Error>> {
     let mut record = Record::new().unwrap();
 
-    if config.random == true {
+    if conf.random == true {
         handle_random_data(
             record,
-            config.random_generate_interval,
-            config.random_store_interval
+            conf.random_generate_interval,
+            conf.random_store_interval
         );
     } else {
         handle_user_data(&mut record)?;
