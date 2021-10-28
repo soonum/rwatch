@@ -5,6 +5,7 @@
 
 mod config;
 
+use std::cmp;
 use std::error::Error;
 use std::io::{self, Write};
 use std::io::BufRead;
@@ -50,31 +51,33 @@ impl Record {
         Ok(())
     }
 
-    pub fn get_data(&mut self, lines: Option<u32>, latest: bool, flush: bool)
-        -> Vec<Value> {
+    pub fn get_data(&mut self, lines: Option<usize>, latest: bool, flush: bool)
+        -> Option<Vec<Value>> {
 
         let mut list = self.list.lock().unwrap();
-        let data: <Vec<Value>> = Vec::new();
+        let mut data: Vec<Value>;
+        let list_length = list.len();
 
-        // Faire un fast-path dans le cas ou 0 est passé en argument
         if let Some(i) = lines {
-            if lastest == true {
-                data.extend_form_slice(get_record_slice(list, lines));
-            } else {
-
+            if i == 0 || list_length == 0 {
+                return None
             }
-        } else {}
 
-        if flush == true {
-            list.clear()
+            let mut bounds = match latest {
+                true => (list_length.saturating_sub(i), list_length),
+                false => (0, cmp::min(i, list_length)),
+            };
+
+            data = Vec::from(&list[bounds.0..bounds.1]);
+        } else {
+            data = Vec::from(&list[..]);
         }
 
-        Ok(data)
-    }
+        if flush == true {
+            list.clear();
+        }
 
-    fn get_record_slice(&list: Vec<Value>, length: i32) -> &Vec<Value> {
-        // Gérer le cas où l'index `length` dépasse la taille autorisée (omettre les lignes inexistantes)
-        // -> choper le minimum entre la longueur de `list` et la valeur de `length`
+        Some(data)
     }
 }
 
