@@ -9,6 +9,7 @@ use std::cmp;
 use std::error::Error;
 use std::io::{self, Write};
 use std::io::BufRead;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::thread;
@@ -46,7 +47,6 @@ impl Record {
                 }
             };
         }
-        //println!("Record: {:#?}", self);  // DEBUG
 
         Ok(())
     }
@@ -55,7 +55,7 @@ impl Record {
         -> Option<Vec<Value>> {
 
         let mut list = self.list.lock().unwrap();
-        let mut data: Vec<Value>;
+        let data: Vec<Value>;
         let list_length = list.len();
 
         if let Some(i) = lines {
@@ -63,7 +63,7 @@ impl Record {
                 return None
             }
 
-            let mut bounds = match latest {
+            let bounds = match latest {
                 true => (list_length.saturating_sub(i), list_length),
                 false => (0, cmp::min(i, list_length)),
             };
@@ -111,13 +111,49 @@ fn execute_command(name: &String, args: Vec<String>, record: &mut Record)
     name.to_lowercase();
 
     match name.as_str() {
-        //"send" => record.get_data(args),
+        "send" => {
+            let (lines, latest, flush) = parse_send_args(&args)?;
+            record.get_data(lines, latest, flush);
+        },
 	    "store" => record.store_data(&args)?,
 	    "quit" => println!("quit entered"),
 	    _ => eprintln!("'{}' is not a valid command", name)
     };
 
     Ok(())
+}
+
+fn parse_send_args(args: &Vec<String>)
+    -> Result<(Option<usize>, bool, bool), Box<dyn Error>> {
+
+    let lines: Option<usize> = match usize::from_str(&args[0]) {
+        Ok(n) => Some(n),
+        Err(err) => {
+            if &args[0].to_lowercase() == "none" {
+                None
+            }
+            else {
+                eprintln!("Failed to parse first argument '{}' (expected type: unsigned interger or 'none')", &args[0]);
+                return Err(Box::new(err));
+            }
+        }
+    };
+    let latest = match bool::from_str(&args[1]) {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!("Failed to parse second argument '{}' (expected type: boolean)", &args[1]);
+            return Err(Box::new(err));
+        }
+    };
+    let flush = match bool::from_str(&args[2]) {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!("Failed to parse third argument '{}' (expected type: boolean)", &args[2]);
+            return Err(Box::new(err));
+        }
+    };
+
+    Ok((lines, latest, flush))
 }
 
 fn generate_random_data(
@@ -172,12 +208,15 @@ fn store_random_data(
             let mut container = match data_container.lock() {
                 Ok(n) => n,
                 Err(e) => {
-                    eprintln!("Failed to store random data: {}",e);
-                    break;
+                    eprintln!("Failed to store random data: {}", e);
+                    continue;
                 }
             };
 
-            record.store_data(&container);
+            if let Err(e) = record.store_data(&container){
+                eprintln!("Failed to store random data: {}", e);
+                continue;
+            };
             container.clear();
         }
     }
@@ -243,6 +282,12 @@ pub fn run(conf: &config::Config) -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
 
+    fn store_data(record: &mut Record, data: &Vec<String>) {
+        if let Err(e) = record.store_data(data) {
+            panic!("Failed to populate record: {}", e)
+        };
+    }
+
     #[test]
     fn store_data_push_result_into_record() {
         let raw_line = String::from(r#"{"json_field": 1}"#);
@@ -250,9 +295,9 @@ mod tests {
         let data = vec![raw_line];
 
         let mut record = Record::new().unwrap();
-        record.store_data(data);
+        store_data(&mut record, &data);
 
-        assert_eq!(record.list[0], parsed_line);
+        assert_eq!(record.list.lock().unwrap()[0], parsed_line);
     }
 
     #[test]
@@ -262,9 +307,9 @@ mod tests {
         let data = vec![line_1, line_2];
 
         let mut record = Record::new().unwrap();
-        record.store_data(data);
+        store_data(&mut record, &data);
 
-        assert_eq!(record.list.len(), 2);
+        assert_eq!(record.list.lock().unwrap().len(), 2);
     }
 
     #[test]
@@ -273,14 +318,76 @@ mod tests {
         let data = vec![line];
 
         let mut record = Record::new().unwrap();
-        record.store_data(data);
+        store_data(&mut record, &data);
 
-        assert_eq!(record.list.len(), 0);
+        assert_eq!(record.list.lock().unwrap().len(), 0);
+    }
 
+    fn get_populated_record(entries: usize) -> Record {
+        let mut data: Vec<String> = Vec::with_capacity(entries);
+        let mut record = Record::new().unwrap();
+
+        for i in 0..entries {
+            let line = String::from(format!(r#"{{"json_field": {}}}"#, &i));
+            data.push(line);
+        }
+
+        store_data(&mut record, &data);
+        record
+    }
+
+    #[test]
+    fn get_data_return_whole_record() {
+        let mut record = get_populated_record(3);
+        let result = record.get_data(None, false, false);
+        let expected = &record.list.lock().unwrap()[..];
+
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn get_data_return_first_n_entries() {
+        let mut record = get_populated_record(3);
+        let result = record.get_data(Some(1), false, false);
+        let expected = &record.list.lock().unwrap()[..1];
+
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn get_data_return_last_n_entries() {
+        let mut record = get_populated_record(3);
+        let result = record.get_data(Some(1), true, false);
+        let expected = &record.list.lock().unwrap()[2..];
+
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn get_data_handle_lines_overflow() {
+        let mut record = get_populated_record(3);
+        let result = record.get_data(Some(5), false, false);
+        let expected = &record.list.lock().unwrap()[..];
+
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn get_data_flush_record() {
+        let mut record = get_populated_record(3);
+        record.get_data(None, true, true);
+
+        assert_eq!(record.list.lock().unwrap().len(), 0);
     }
 
     #[test]
     fn execute_command_name_is_case_insensitive() {
+        // TODO: Complete the test
+        let name = String::from("sEnD");
+    }
+
+    #[test]
+    fn execute_command_name_strip_whitespaces() {
         // TODO: Complete the test
         let name = String::from("sEnD");
     }
