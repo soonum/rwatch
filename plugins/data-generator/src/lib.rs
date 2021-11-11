@@ -110,7 +110,7 @@ fn execute_command(name: &String, args: Vec<String>, record: &mut Record)
 
     name.to_lowercase();
 
-    match name.as_str() {
+    match name.as_str().trim() {
         "send" => {
             let (lines, latest, flush) = parse_send_args(&args)?;
             record.get_data(lines, latest, flush);
@@ -239,7 +239,7 @@ fn handle_random_data(record: Record, generate_interval: Duration, store_interva
     handle_store.join().unwrap();  // DEBUG
 }
 
-fn handle_user_data(record: &mut Record) -> Result<(), Box<dyn Error>> {
+fn handle_user_data(record: &mut Record) -> ! {
     loop {
         let parsed_lines = parse_lines();
         let parsed_lines: Vec<String> = match parsed_lines {
@@ -253,12 +253,9 @@ fn handle_user_data(record: &mut Record) -> Result<(), Box<dyn Error>> {
         let name = &parsed_lines[0];
         let args = (&parsed_lines[1..]).to_vec();
         if let Err(..) = execute_command(name, args, record) {
-            break;
+            continue;
         }
     }
-
-    Ok(())
-
 }
 
 pub fn run(conf: &config::Config) -> Result<(), Box<dyn Error>> {
@@ -271,7 +268,7 @@ pub fn run(conf: &config::Config) -> Result<(), Box<dyn Error>> {
             conf.random_store_interval
         );
     } else {
-        handle_user_data(&mut record)?;
+        handle_user_data(&mut record);
     }
     // Idiomatic, call run() for its side-effects and not the value
     // returned in case of success.
