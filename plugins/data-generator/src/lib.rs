@@ -108,15 +108,12 @@ fn parse_lines() -> Result<Vec<String>, &'static str> {
 fn execute_command(name: &String, args: Vec<String>, record: &mut Record)
     -> Result<(), Box<dyn Error>> {
 
-    name.to_lowercase();
-
-    match name.as_str().trim() {
+    match name.to_lowercase().as_str().trim() {
         "send" => {
             let (lines, latest, flush) = parse_send_args(&args)?;
             record.get_data(lines, latest, flush);
         },
 	    "store" => record.store_data(&args)?,
-	    "quit" => println!("quit entered"),
 	    _ => eprintln!("'{}' is not a valid command", name)
     };
 
@@ -378,14 +375,43 @@ mod tests {
     }
 
     #[test]
+    fn execute_command_variants() {
+        let mut record = get_populated_record(3);
+        let name = String::from("send");
+        let args = vec![String::from("none"),
+                        String::from("false"),
+                        String::from("true")];
+        execute_command(&name, args, &mut record);
+
+        assert_eq!(record.list.lock().unwrap().len(), 0);
+
+        let raw_line = String::from(r#"{"json_field": 1}"#);
+        let name = String::from("store");
+        let mut record = Record::new().unwrap();
+        execute_command(&name, vec![raw_line], &mut record);
+
+        assert_eq!(record.list.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn execute_command_name_is_case_insensitive() {
-        // TODO: Complete the test
-        let name = String::from("sEnD");
+        let name = String::from("sTorE");
+        let raw_line = String::from(r#"{"json_field": 1}"#);
+        let mut record = Record::new().unwrap();
+        execute_command(&name, vec![raw_line], &mut record);
+
+        assert_eq!(record.list.lock().unwrap().len(), 1);
+
     }
 
     #[test]
     fn execute_command_name_strip_whitespaces() {
-        // TODO: Complete the test
-        let name = String::from("sEnD");
+        let name = String::from("   store   ");
+        let raw_line = String::from(r#"{"json_field": 1}"#);
+        let mut record = Record::new().unwrap();
+        execute_command(&name, vec![raw_line], &mut record);
+
+        assert_eq!(record.list.lock().unwrap().len(), 1);
+
     }
 }
